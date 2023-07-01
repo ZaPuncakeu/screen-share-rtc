@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.9.3/simplepeer.min.js"></script>
+    <title>WebRTC workshop</title>
+</head>
+<body>
+    <button id="start-call">
+        Share the screen
+    </button>
+
+    <div style="display: flex; justify-content: space-between;">
+        <div style="width: 50%">
+            <h1>Your video</h1>
+            <video controls id="you"></video>
+        </div>
+        <div id="partners" style="width: 50%; display: flex; justify-content: space-between; flex-wrap: wrap;">
+        </div>
+    </div>
+
+    <script>
+        const roomId = window.prompt("Donnez l'id de la room : ");
+
+      
+        const uniqueId = () => {
+            const dateString = Date.now().toString(36);
+            const randomness = Math.random().toString(36).substr(2);
+            return dateString + randomness;
+        };
+
+        const socket = io('/');
+
+        // Permet de rejoindre une room socket afin d'isoler les communications
+        socket.emit('join-room', roomId);
+        
+        let localStream = new MediaStream();
+
+        // Donne un identifiant à chaque client
+        const id = uniqueId();
+
+        console.log("Id created: ", id);
+
+        const servers = {
+            "iceServers": [
+                {
+                    urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302']
+                }
+            ],
+            iceCandidatePoolSize: 5
+        }
+
+        let peer = {}; // Objet qui va contenir toute les connexions RTC
+
+        let answer_sent = false;
+
+        // Version avec bouton
+        /*document.getElementById('start-call').onclick = async e => {
+            localStream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    width: 200,
+                    height: 200,
+                    cursor: 'always'
+                },
+                audio: false
+            })
+            
+            setVideo("you", localStream);
+
+            socket.emit('new_user', id);
+
+            socket.on('process-answer', async answerData => {
+                console.log(peer);
+                if(answerData.idDest !== id) return;
+                console.log("Réponse reçu : ", answerData)
+                await peer[answerData.idOrigin].setRemoteDescription(answerData.answer);
+                peer[answerData.idOrigin].addIceCandidate(answerData.candidate);
+            })
+
+            socket.on('process-offer', async offerData => {
+                if(typeof(peer[offerData.id]) != "undefined") return;
+                console.log("Offre reçu : ", offerData.offer)
+                initRTC(offerData.id);
+
+                peer[offerData.id].onicecandidate = evt => {
+                    if(evt.candidate) {
+                        socket.emit('init-answer', {
+                            idDest: offerData.id,
+                            idOrigin: id,
+                            answer: peer[offerData.id].localDescription,
+                            candidate: evt.candidate
+                        });
+                    }
+                }
+
+                await peer[offerData.id].setRemoteDescription(offerData.offer);
+                
+                peer[offerData.id].addIceCandidate(offerData.candidate);
+                
+                const answerDescription = await peer[offerData.id].createAnswer();
+                await peer[offerData.id].setLocalDescription(answerDescription);
+            })
+
+            socket.on('new_user', new_user_id => {
+                startCall(new_user_id);
+            })
+        }*/
+
+        // Version sans Bouton 
+        (async () => {
+            localStream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    width: 200,
+                    height: 200,
+                    cursor: 'always'
+                },
+                audio: false
+            })
+            
+            setVideo("you", localStream); // Lance la video dans la balise dont l'id est "you"
+
+            socket.emit('new_user', id); // Lance un signale au serveur qu'un nouvel client vient de se connecter
+
+            /*
+                - Commence à écouter les prochains clients qui vont rejoindre. 
+                - Si il y'a des clients qui sont déjà connectés alors ils vont exécuter cet event dès qu'un nouveau client se connecte
+            */
+            socket.on('new_user', new_user_id => {
+                startCall(new_user_id);
+            })
+
+            socket.on('process-answer', async answerData => {
+                // A la récéption d'une réponse, vérifie si le destinataire est le bon
+                console.log(peer);
+                if(answerData.idDest !== id) return;
+                console.log("Réponse reçu : ", answerData)
+
+                // Si oui, la réponse sera lu et une connexion RTC est alors établie.
+                await peer[answerData.idOrigin].setRemoteDescription(answerData.answer);
+                peer[answerData.idOrigin].addIceCandidate(answerData.candidate);
+            })
+
+            socket.on('process-offer', async offerData => {
+                
+                if(
+                    offerData.idDest !== id // vérifie si le client qui reçoit l'offre est la bonne
+                    ||
+                    typeof(peer[offerData.id]) != "undefined" // vérifie si le client a déjà une connexion ouverte
+                ) return; 
+                console.log("Offre reçu : ", offerData.offer)
+
+                // Si c'est la bonne client, alors une nouvelle connexion RTC sera créée
+                initRTC(offerData.id);
+
+                /*
+                    Dès qu'un candidat ICE est créé, exécute cet event
+                */
+                peer[offerData.id].onicecandidate = evt => {
+                    if(evt.candidate) {
+                        /* 
+                            Si le candidat existe, cela veut dire qu'une réponse vient d'être créée.
+                            Envoi la réponse à l'client. (Le destinataire est spécifié via le idDest)
+                        */
+                        socket.emit('init-answer', {
+                            idDest: offerData.id,
+                            idOrigin: id,
+                            answer: peer[offerData.id].localDescription,
+                            candidate: evt.candidate
+                        });
+                    }
+                }
+
+                // L'offre est chargée
+                await peer[offerData.id].setRemoteDescription(offerData.offer);
+                
+                peer[offerData.id].addIceCandidate(offerData.candidate);
+                
+                const answerDescription = await peer[offerData.id].createAnswer();
+
+                // Dès que réponse est chargée, un candidat est créé
+                await peer[offerData.id].setLocalDescription(answerDescription);
+            })
+        })();
+
+        function initRTC(key) {
+            localStream.getTracks().forEach(track => {
+                peer[key] = new RTCPeerConnection(servers); // Ajout d'une nouvelle connexion RTC à l'objet
+                peer[key].addTrack(track, localStream);
+            })
+
+            peer[key].ontrack = evt => {
+                console.log("On track!!!");
+                appendVideo(evt.streams[0]); // Si la vidéo est chargée, ajoute une nouvelle balise et lance la vidéo
+            }
+        }
+        
+        function startCall(new_user_id) {
+            initRTC(new_user_id);
+            connect(new_user_id);
+        }
+
+        let offer_sent = false;
+
+        async function connect(new_user_id) {
+
+            /*
+                Dès qu'un candidat ICE est créé, exécute cet event
+            */
+            peer[new_user_id].onicecandidate = evt => {
+                if(evt.candidate) {
+                    /* 
+                        Si le candidat existe, cela veut dire qu'une offre vient d'être créée.
+                        Envoi l'offre à l'client. (Le destinataire est spécifié via le idDest)
+                    */
+                    socket.emit('init-offer', {
+                        id,
+                        idDest: new_user_id,
+                        candidate: evt.candidate,
+                        offer: peer[new_user_id].localDescription
+                    })
+                }
+            }
+
+            const offerDescription = await peer[new_user_id].createOffer();
+
+            // Dès que l'offre est chargée, un candidat est créé
+            await peer[new_user_id].setLocalDescription(offerDescription);
+
+            
+        }
+
+        const setVideo = (id, stream) => 
+        {
+            const v = document.getElementById(id);
+            v.srcObject = stream;
+            v.addEventListener('loadedmetadata', () => 
+            {
+                if(id == "you")
+                {
+                    v.muted = true;
+                }
+                v.play();
+            });
+        }
+
+        function appendVideo(stream) {
+            const vid = uniqueId()
+            document.getElementById('partners').insertAdjacentHTML('beforeend', `
+                <video controls id="${vid}"></video>
+            `)
+
+            setVideo(vid, stream);
+        }
+
+        
+    </script>
+</body>
+</html>
